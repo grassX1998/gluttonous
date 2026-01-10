@@ -1,0 +1,23 @@
+[project]
+name = "gluttonous"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [{ name = "grasszhang", email = "grassX1998@outlook.com" }]
+dependencies = [
+    "polars>=1.7.1",
+    "futu>=0.0.1",
+    "futu-api>=8.5.4508",
+    "tqdm>=4.66.5",
+    "toml>=0.10.2",
+]
+requires-python = "==3.11.*"
+readme = "README.md"
+license = { text = "MIT" }
+
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.scripts]
+env_test = { cmd = "python src/demo/test.py", env = { "PYTHONPATH" = "." } }
+get_kline = { cmd = "python src/demo/get_min_kline.py", env = { "PYTHONPATH" = "." } }
