@@ -2,7 +2,7 @@ import polars as pl
 import os
 import toml
 
-gm_dir = f"/mnt/data/stock/gm"
+gm_dir = f"/data/stock/gm"
 
 
 def get_trading_days(start: str, end: str):

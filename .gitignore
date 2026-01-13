@@ -14,5 +14,24 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# python
-*__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+
+# Data & logs
+data/
+*.log
+output.log

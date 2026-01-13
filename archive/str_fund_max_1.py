@@ -2,7 +2,6 @@ import polars as pl
 import os
 import time
 import datetime
-from utils import qq_bot
 
 from dataclasses import dataclass
 from src.futuapi.futu_api import FutuApi
@@ -230,8 +229,7 @@ class StrFundMax1:
                 buy_list.append([record])
 
         message = f"[fund_on_recv] {self.date}, sale: {[[ele[0].code, ele[1]] for ele in sale_list]}, buy: {[[ele[0].code] for ele in buy_list]}"
-        qq_bot.push_message(message)
-        # print(message)
+        print(message)
         # print(
         #     self.date,
         #     "sale: ",
