@@ -35,3 +35,6 @@ env/
 data/
 *.log
 output.log
+
+# Pipeline data (local cache)
+.pipeline_data/
