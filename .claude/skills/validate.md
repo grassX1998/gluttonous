@@ -98,4 +98,4 @@ cat .pipeline_data/validation_report.json
 
 校验通过后，可以：
 1. 如果是清洗数据校验通过：运行特征工程 `python -m pipeline.data_cleaning.features`
-2. 如果是特征数据校验通过：开始模型训练 `python -m pipeline.training.train`
+2. 如果是特征数据校验通过：运行 LSTM 实验框架 `python src/lstm/scripts/run_experiments.py`

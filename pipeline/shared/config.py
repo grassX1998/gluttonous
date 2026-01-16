@@ -4,6 +4,8 @@ Pipeline共享配置
 """
 
 from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List
 import torch
 
 # ===== 路径配置 =====
@@ -21,6 +23,10 @@ CLEANED_DATA_DIR = PIPELINE_DATA_ROOT / "cleaned"
 
 # 特征数据路径
 FEATURE_DATA_DIR = PIPELINE_DATA_ROOT / "features"
+# 月度组织的特征数据（用于 backtest_v5.py 等）
+FEATURE_DATA_MONTHLY_DIR = PIPELINE_DATA_ROOT / "features_monthly"
+# 日线数据（用于回测）
+DAILY_DATA_DIR = PIPELINE_DATA_ROOT / "daily"
 
 # 训练数据路径
 TRAIN_DATA_DIR = PIPELINE_DATA_ROOT / "train"
@@ -32,8 +38,9 @@ MODEL_CHECKPOINT_DIR = PIPELINE_DATA_ROOT / "checkpoints"
 BACKTEST_RESULT_DIR = PIPELINE_DATA_ROOT / "backtest_results"
 
 # 创建所有必要的目录
-for dir_path in [CLEANED_DATA_DIR, FEATURE_DATA_DIR, TRAIN_DATA_DIR, 
-                 MODEL_CHECKPOINT_DIR, BACKTEST_RESULT_DIR]:
+for dir_path in [CLEANED_DATA_DIR, FEATURE_DATA_DIR, FEATURE_DATA_MONTHLY_DIR,
+                 DAILY_DATA_DIR, TRAIN_DATA_DIR, MODEL_CHECKPOINT_DIR,
+                 BACKTEST_RESULT_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 
@@ -143,4 +150,104 @@ VALIDATION_CONFIG = {
     "check_distribution": True,
     "check_label_balance": True,
     "generate_report": True,
+}
+
+
+# ===== 多方案实验框架配置 =====
+
+@dataclass
+class TrainStrategyConfig:
+    """训练策略配置基类"""
+    strategy_name: str
+    description: str
+
+
+@dataclass
+class ExpandingWindowConfig(TrainStrategyConfig):
+    """方案1: 扩展窗口 - 累积历史数据，样本加权"""
+    strategy_name: str = "expanding_window"
+    description: str = "累积扩展训练集，保留所有历史数据"
+    min_train_days: int = 60
+    max_train_days: int = 500
+    val_days: int = 1
+    use_sample_weight: bool = True
+    weight_decay_days: int = 30  # 权重衰减周期
+    weight_decay_rate: float = 0.98  # 每个周期的衰减率
+    retrain_interval: int = 1  # 每天重训练
+
+
+@dataclass
+class RollingKFoldConfig(TrainStrategyConfig):
+    """方案2: 固定滚动窗口 + K折验证"""
+    strategy_name: str = "rolling_kfold"
+    description: str = "固定60天窗口，时间序列K折交叉验证"
+    train_days: int = 60
+    val_days: int = 1
+    n_folds: int = 3  # 时间序列K折数
+    retrain_interval: int = 5  # 每5天重训练
+
+
+@dataclass
+class MultiScaleEnsembleConfig(TrainStrategyConfig):
+    """方案3: 多尺度集成 - 短中长期模型组合"""
+    strategy_name: str = "multiscale_ensemble"
+    description: str = "短中长期模型集成"
+    windows: List[int] = field(default_factory=lambda: [20, 60, 120])
+    val_days: int = 1
+    ensemble_weights: List[float] = field(default_factory=lambda: [0.3, 0.4, 0.3])
+    retrain_interval: int = 5
+
+
+@dataclass
+class AdaptiveRetrainConfig(TrainStrategyConfig):
+    """方案4: 自适应重训练 - 性能监控，按需训练"""
+    strategy_name: str = "adaptive_retrain"
+    description: str = "性能监控，按需重训练"
+    train_days: int = 60
+    val_days: int = 1
+    retrain_interval: int = 5  # 检查间隔
+    performance_threshold: float = 0.52  # 性能阈值（准确率）
+    patience: int = 3  # 连续低于阈值N次才重训练
+
+
+@dataclass
+class IncrementalLearningConfig(TrainStrategyConfig):
+    """方案5: 增量学习 - 在线学习，持续微调"""
+    strategy_name: str = "incremental_learning"
+    description: str = "在线学习，持续微调"
+    initial_train_days: int = 60
+    val_days: int = 1
+    finetune_lr: float = 0.0001  # 微调学习率
+    finetune_epochs: int = 3
+    forget_rate: float = 0.95  # 遗忘率（类似EWM）
+    update_interval: int = 1  # 每天更新
+
+
+@dataclass
+class NoValBayesianConfig(TrainStrategyConfig):
+    """方案6: 无验证集 + 贝叶斯优化超参数"""
+    strategy_name: str = "no_val_bayesian"
+    description: str = "无显式验证集，依赖正则化和预优化超参数"
+    train_days: int = 60
+    val_days: int = 0  # 无验证集
+    use_bayesian_opt: bool = True
+    bayesian_n_trials: int = 20  # 贝叶斯优化试验次数
+    retrain_interval: int = 5
+    # 更强的正则化
+    dropout: float = 0.5
+    weight_decay: float = 0.01
+
+
+# 默认策略配置
+DEFAULT_STRATEGY_CONFIG = ExpandingWindowConfig()
+
+
+# 所有可用策略
+ALL_STRATEGY_CONFIGS = {
+    "expanding_window": ExpandingWindowConfig,
+    "rolling_kfold": RollingKFoldConfig,
+    "multiscale_ensemble": MultiScaleEnsembleConfig,
+    "adaptive_retrain": AdaptiveRetrainConfig,
+    "incremental_learning": IncrementalLearningConfig,
+    "no_val_bayesian": NoValBayesianConfig,
 }

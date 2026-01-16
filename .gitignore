@@ -38,3 +38,6 @@ output.log
 
 # Pipeline data (local cache)
 .pipeline_data/
+
+# LSTM training data (local cache)
+src/lstm/data/

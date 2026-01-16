@@ -36,6 +36,29 @@ Gluttonous 是一个基于机器学习的 A 股量化选股系统，使用 LSTM 
 
 ## 常用命令
 
+### LSTM 实验框架（推荐使用）
+
+```bash
+# 测试框架
+python src/lstm/scripts/test_framework.py
+
+# 运行扩展窗口策略实验
+python src/lstm/scripts/run_experiments.py \
+    --strategies expanding_window \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 计算回测指标并更新文档
+python src/lstm/scripts/run_experiments.py \
+    --strategies expanding_window \
+    --calculate_metrics \
+    --update_claude_md
+```
+
+详细使用指南：`src/lstm/README.md`
+迁移文档：`docs/LSTM_FRAMEWORK_MIGRATION.md`
+快速入门：`docs/QUICKSTART_LSTM.md`
+
 ### 数据流水线
 
 ```bash
@@ -51,18 +74,6 @@ python -m pipeline.data_cleaning.features
 
 # 3. 数据校验
 python -m pipeline.data_validation.validate
-
-# 4. 模型训练
-python -m pipeline.training.train --batch_size 512 --epochs 100
-
-# 5. 回测（含 Walk-Forward 训练）
-python backtest_v5.py
-
-# 6. 生成图表
-python plot_backtest.py
-
-# 7. 运行指定时间段的 Walk-Forward 回测
-python -m pipeline.backtest.backtest --start_date 2025-01-01 --end_date 2025-12-31
 ```
 
 ### 缓存管理
@@ -88,31 +99,42 @@ Remove-Item -Recurse -Force ".pipeline_data\train\*"
 ### 目录结构
 
 ```
+src/
+└── lstm/                        # LSTM 训练框架
+    ├── config.py               # LSTM 专用配置
+    ├── models/                 # 模型定义
+    │   └── lstm_model.py      # SimpleLSTMModel & LSTMModel
+    ├── experiments/            # 多策略实验框架
+    │   ├── base_executor.py   # 策略执行器基类
+    │   ├── experiment_manager.py  # 实验管理器
+    │   ├── executors/         # 策略执行器
+    │   │   └── expanding_window.py  # 扩展窗口策略
+    │   └── metrics/           # 结果记录
+    │       └── result_recorder.py   # 指标计算
+    ├── scripts/               # 运行脚本
+    │   ├── run_experiments.py # 主实验脚本
+    │   └── test_framework.py  # 测试脚本
+    └── data/                  # 数据目录（gitignore）
+        ├── checkpoints/       # 模型检查点
+        └── results/           # 实验结果
+
 pipeline/
 ├── data_cleaning/       # 数据清洗 & 特征工程
 │   ├── clean.py        # 将分钟数据转换为日K线
 │   └── features.py     # 技术指标计算
 ├── data_validation/     # 数据校验
 │   └── validate.py
-├── training/           # 模型训练
-│   ├── train.py       # GPU 加速训练
-│   └── walk_forward.py # Walk-forward 验证
-├── backtest/           # 策略回测
-│   └── backtest.py
 └── shared/             # 共享模块
-    ├── config.py      # 配置文件
+    ├── config.py      # 基础配置
     └── utils.py       # 工具函数
-
-backtest_v5.py          # 主回测脚本（当前版本）
-plot_backtest.py        # 绘图脚本
 ```
 
 ### 数据流
 
 1. **原始数据** (NAS) → `clean.py` → **日K线** (`.pipeline_data/cleaned/`)
 2. **日K线** → `features.py` → **特征 + 标签** (`.pipeline_data/features/`)
-3. **特征** → `train.py` 或 `backtest_v5.py` → **模型训练** → 检查点
-4. **模型** → `backtest.py` → **回测结果** (`.pipeline_data/backtest_results/`)
+3. **特征** → **LSTM 实验框架** → **模型训练** → 检查点 (`src/lstm/data/checkpoints/`)
+4. **模型** → **回测预测** → **实验结果** (`src/lstm/data/results/`)
 
 ### Walk-Forward 验证
 
@@ -120,25 +142,19 @@ plot_backtest.py        # 绘图脚本
 
 **核心原则**: 模型只能看到历史数据。训练集/验证集/测试集必须严格按时间顺序分离。
 
-**实现方式** (`backtest_v5.py`):
-- 使用月度滚动窗口
-- 训练窗口：6个月
-- 验证窗口：1个月
-- 测试窗口：1个月（向前滚动）
-- 每个测试期之前重新训练模型
-
-**Walk-Forward 模块** (`pipeline/training/walk_forward.py`):
-- 可配置训练/验证窗口（默认：120/20天）
-- 定期重训练（默认：每5天）
+**实现方式** (LSTM 实验框架):
+- 支持多种训练策略（扩展窗口、K折验证、多尺度集成等）
+- 扩展窗口策略：累积历史数据，样本权重衰减
+- 可配置训练/验证窗口（默认：60天最小训练集）
 - 确保无时间泄露：`train_dates.max() < val_dates.min()`
 
 ### 模型配置
 
-当前设置（`pipeline/shared/config.py` 和 `backtest_v5.py`）:
+当前设置（`src/lstm/config.py`）:
 - 模型：LSTM (hidden=128, layers=2, dropout=0.3)
 - 策略：每日持仓前10只，持有5天
 - 概率阈值：0.60
-- 批次大小：1024 (GPU) / 256 (CPU)
+- 批次大小：1024 (GPU)
 - 训练：10个epoch，早停耐心值=3
 
 ### 特征工程
@@ -177,7 +193,7 @@ plot_backtest.py        # 绘图脚本
 
 ## 策略配置
 
-当前设置（`backtest_v5.py`）:
+当前设置（`src/lstm/config.py` - TRADING_CONFIG）:
 ```python
 TOP_N = 10              # 每日持仓数
 PROB_THRESHOLD = 0.60   # 概率阈值
@@ -186,7 +202,7 @@ COMMISSION = 0.001      # 0.1% 手续费
 SLIPPAGE = 0.001        # 0.1% 滑点
 ```
 
-最近表现（v0.3，2025-04 至 2026-01）:
+最近表现（v0.3，扩展窗口策略，2025-04 至 2026-01）:
 - 总收益率：+74.84%
 - 夏普比率：1.566
 - 最大回撤：47.04%
@@ -198,12 +214,41 @@ SLIPPAGE = 0.001        # 0.1% 滑点
 - 结果保存到 `.pipeline_data/backtest_results/`，JSON 格式
 - 训练使用采样（50%数据）以加快迭代速度同时保持稳定性
 
-## Skills 使用
+## 工作流程
 
-项目定义了4个核心技能，可通过以下命令调用：
+### 完整工作流程
+
+1. **数据准备**：
+   ```bash
+   python -m pipeline.data_cleaning.clean       # 数据清洗
+   python -m pipeline.data_cleaning.features    # 特征工程
+   python -m pipeline.data_validation.validate  # 数据校验
+   ```
+
+2. **模型训练与回测**：
+   ```bash
+   # 测试框架
+   python src/lstm/scripts/test_framework.py
+
+   # 运行完整实验（含回测和指标计算）
+   python src/lstm/scripts/run_experiments.py \
+       --strategies expanding_window \
+       --calculate_metrics \
+       --update_claude_md
+   ```
+
+3. **查看结果**：
+   - 实验结果：`src/lstm/data/results/experiments/`
+   - 模型检查点：`src/lstm/data/checkpoints/`
+
+### 使用 Skills（自动化工作流）
+
+项目定义了 5 个核心技能，可通过以下命令调用：
+
 - `/clean` - 数据清洗
 - `/validate` - 数据校验
 - `/train` - 模型训练
 - `/backtest` - 策略回测
+- `/archive` - 策略归档
 
-详细说明见 `.github/skills/` 目录。
+详细说明见：[.claude/skills/README.md](.claude/skills/README.md)
