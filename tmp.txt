@@ -1,0 +1,14 @@
+萤:
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_BASE_URL", "http://165.154.203.239:3000/api", [System.EnvironmentVariableTarget]::User)
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_AUTH_TOKEN", "cr_316e583bc1c7ba0a891a89c0f7e324f6c44c618c5cea47978ba04ec9f54da72f", [System.EnvironmentVariableTarget]::User)
+
+$env:ANTHROPIC_BASE_URL = "http://165.154.203.239:3000/api"
+$env:ANTHROPIC_AUTH_TOKEN = "<YOUR_AUTH_TOKEN>"
+
+萤:
+export ANTHROPIC_BASE_URL="http://165.154.203.239:3000/api"
+export ANTHROPIC_AUTH_TOKEN="cr_eb49c38a90515ee5771cae203ba02828817a70086922025a88a0319ee0559657"
+
+萤:
+export ANTHROPIC_BASE_URL="http://165.154.203.239:3000/api"
+export ANTHROPIC_AUTH_TOKEN="cr_316e583bc1c7ba0a891a89c0f7e324f6c44c618c5cea47978ba04ec9f54da72f"
