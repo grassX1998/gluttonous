@@ -37,11 +37,104 @@ MODEL_CHECKPOINT_DIR = PIPELINE_DATA_ROOT / "checkpoints"
 # 回测结果路径
 BACKTEST_RESULT_DIR = PIPELINE_DATA_ROOT / "backtest_results"
 
+# 日志目录
+LOG_DIR = PIPELINE_DATA_ROOT / "logs"
+
+# ===== NAS 原始数据扩展目录（新增数据类型）=====
+# Tick 数据目录
+TICK_DATA_DIR = RAW_DATA_ROOT / "tick_l1"
+
+# 财务数据目录
+FINANCE_DATA_DIR = RAW_DATA_ROOT / "finance"
+FINANCE_BALANCE_DIR = FINANCE_DATA_DIR / "balance"      # 资产负债表
+FINANCE_INCOME_DIR = FINANCE_DATA_DIR / "income"        # 利润表
+FINANCE_CASHFLOW_DIR = FINANCE_DATA_DIR / "cashflow"    # 现金流量表
+FINANCE_DERIV_DIR = FINANCE_DATA_DIR / "deriv"          # 财务衍生指标
+
+# 行业分类目录
+INDUSTRY_DATA_DIR = RAW_DATA_ROOT / "meta" / "industry"
+
+# 分红复权目录
+DIVIDEND_DATA_DIR = RAW_DATA_ROOT / "dividend"
+ADJ_FACTOR_DIR = RAW_DATA_ROOT / "adj_factor"
+
+# 股本数据目录
+SHARE_DATA_DIR = RAW_DATA_ROOT / "share"
+
+# 指数成分股历史数据目录
+INDEX_CONSTITUENTS_HISTORY_DIR = RAW_DATA_ROOT / "meta" / "index_history"
+
+# ===== AKShare 数据目录（独立数据源，免费替代方案）=====
+AKSHARE_DATA_ROOT = Path(r"\\DXP8800PRO-A577\data\stock\akshare")
+AKSHARE_INDUSTRY_DIR = AKSHARE_DATA_ROOT / "industry"
+AKSHARE_FINANCE_DIR = AKSHARE_DATA_ROOT / "finance"
+AKSHARE_DIVIDEND_DIR = AKSHARE_DATA_ROOT / "dividend"
+AKSHARE_HIST_DIR = AKSHARE_DATA_ROOT / "hist"
+AKSHARE_INDEX_DIR = AKSHARE_DATA_ROOT / "index"  # 指数日线数据
+
 # 创建所有必要的目录
 for dir_path in [CLEANED_DATA_DIR, FEATURE_DATA_DIR, FEATURE_DATA_MONTHLY_DIR,
                  DAILY_DATA_DIR, TRAIN_DATA_DIR, MODEL_CHECKPOINT_DIR,
-                 BACKTEST_RESULT_DIR]:
+                 BACKTEST_RESULT_DIR, LOG_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
+
+
+# ===== 掘金 API 配置 =====
+JUEJIN_CONFIG = {
+    "server": "192.168.31.252:7001",
+    "token": "2a34fdeb7eb2d63c6fe3a1c05230b29a236171c5",
+}
+
+
+# ===== 每日任务配置 =====
+DAILY_TASK_CONFIG = {
+    "run_after": "17:00:00",    # 17:00 后开始采集
+    "check_interval": 600,      # 检查间隔（秒），10分钟
+    "max_retries": 3,           # 任务失败最大重试次数
+    "retry_interval": 1800,     # 重试间隔（秒），30分钟
+}
+
+
+# ===== 扩展数据采集配置 =====
+EXTENDED_DATA_CONFIG = {
+    # 财务数据更新配置（季报发布后更新）
+    "finance_update_months": [1, 4, 8, 10],  # 季报发布月份
+    "finance_update_day": 1,  # 每月第几天检查更新
+
+    # 行业分类更新配置
+    "industry_update_interval_days": 30,  # 每30天更新一次
+
+    # 分红数据更新配置
+    "dividend_lookback_days": 365,  # 初次采集回溯天数
+
+    # 股本数据更新配置
+    "share_update_daily": True,  # 每日更新
+
+    # 复权因子更新配置
+    "adj_factor_update_daily": True,  # 每日更新
+
+    # Tick 数据采集配置
+    "tick_batch_size": 50,  # 每批采集股票数（避免 API 限流）
+    "tick_retry_delay": 1.0,  # 重试间隔（秒）
+
+    # 多线程采集配置
+    "collection_workers": 12,           # 默认工作线程数
+    "api_rate_limit": 50,               # 每秒最大请求数
+    "api_burst_limit": 100,             # 突发请求上限
+    "progress_log_interval": 100,       # 进度日志间隔（每完成多少任务输出一次）
+}
+
+
+# ===== 邮件通知配置 =====
+EMAIL_CONFIG = {
+    "enabled": False,                          # 是否启用邮件通知（暂时禁用）
+    "smtp_server": "smtp.office365.com",       # SMTP 服务器
+    "smtp_port": 587,                          # SMTP 端口（587=TLS, 465=SSL）
+    "use_tls": True,                           # 使用 TLS
+    "sender_email": "grassX1998@outlook.com",  # 发件人邮箱
+    "sender_password": "fxskhnitwxymvtgt",                     # 发件人密码/应用密码（需要手动填写）
+    "recipient_email": "grassX1998@outlook.com",  # 收件人邮箱
+}
 
 
 # ===== 硬件配置 =====

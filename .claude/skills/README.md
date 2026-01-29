@@ -4,6 +4,19 @@
 
 ## 可用技能
 
+### 0. 数据采集 (collect)
+
+**命令**: `/collect`
+
+从掘金 API 采集股票数据，支持单日采集和每日定时任务。
+
+**输入**: 掘金 API 配置、目标日期
+**输出**: NAS 上的 K 线数据、`logs/{date}/data_collection.log`
+
+详细说明：[collect.md](./collect.md)
+
+---
+
 ### 1. 数据清洗 (clean)
 
 **命令**: `/clean`
@@ -34,10 +47,16 @@
 
 **命令**: `/train`
 
-使用 LSTM 实验框架进行模型训练和回测。
+支持 LSTM 框架和多模型框架（LightGBM/MLP/Ensemble）进行模型训练。
 
 **输入**: 特征数据、价格数据
 **输出**: 模型检查点、实验结果
+
+**支持的模型**:
+- LSTM（时序深度学习）
+- LightGBM（梯度提升树）
+- MLP（多层感知器）
+- Ensemble（集成模型）
 
 详细说明：[train.md](./train.md)
 
@@ -47,7 +66,7 @@
 
 **命令**: `/backtest`
 
-使用 LSTM 实验框架进行策略回测和性能评估。
+支持 LSTM 框架和多模型框架进行策略回测和性能评估。
 
 **输入**: 特征数据、价格数据
 **输出**: 回测结果、性能指标
@@ -56,7 +75,22 @@
 
 ---
 
-### 5. 策略归档 (archive)
+### 5. 多模型对比 (compare)
+
+**命令**: `/compare`
+
+运行多个模型并生成对比分析报告。
+
+**输入**: 特征数据、价格数据
+**输出**: 对比报告、对比图表
+
+**可用模型**: lightgbm, mlp, ensemble
+
+详细说明：[compare.md](./compare.md)
+
+---
+
+### 6. 策略归档 (archive)
 
 **命令**: `/archive`
 
@@ -69,11 +103,33 @@
 
 ---
 
+### 7. 代码审查 (review)
+
+**命令**: `/review`
+
+在代码修改后进行全面审查，评估框架合理性、代码质量、可复用性和规范性。
+
+**审查维度**:
+- 框架合理性（模块划分、依赖关系、数据流）
+- 代码实现（正确性、健壮性、效率、可读性）
+- 可复用性（DRY原则、通用组件、配置参数化）
+- 规范性（命名规范、类型注解、文档字符串）
+- 项目特定规范（时间序列安全、配置集中）
+
+**输出**: 审查报告（问题列表、修改建议、优先级）
+
+详细说明：[review.md](./review.md)
+
+---
+
 ## 典型工作流
 
-### 完整流程
+### 完整流程（LSTM 框架）
 
 ```bash
+# 0. 数据采集（每日 17:00 后自动执行，或手动运行）
+/collect --date 2026-01-17
+
 # 1. 数据清洗
 /clean
 
@@ -90,16 +146,37 @@ python -m pipeline.data_cleaning.features
 /archive --version v0.3 --strategy expanding_window
 ```
 
+### 多模型对比流程
+
+```bash
+# 1. 确保数据已准备（同上步骤 0-3）
+
+# 2. 多模型对比
+/compare
+
+# 或直接运行
+python src/models/scripts/compare_models.py \
+    --models lightgbm,mlp,ensemble \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 3. 查看对比报告
+cat src/models/data/results/reports/comparison_*.md
+```
+
 ### 快速测试
 
 ```bash
-# 测试框架
+# 测试 LSTM 框架
 python src/lstm/scripts/test_framework.py
 
-# 运行实验
+# 运行 LSTM 实验
 python src/lstm/scripts/run_experiments.py \
     --strategies expanding_window \
     --calculate_metrics
+
+# 运行多模型实验
+python src/models/scripts/run_lightgbm.py --start_date 2025-04-01 --end_date 2026-01-15
 ```
 
 ---
@@ -123,20 +200,105 @@ python src/lstm/scripts/run_experiments.py \
 ## 技能依赖关系
 
 ```
-clean (数据清洗)
+collect (数据采集) [每日自动]
   ↓
+clean (数据清洗)
+  ↓                    ←── review (代码审查) [修改后触发]
 features (特征工程)
   ↓
 validate (数据校验)
   ↓
 train/backtest (训练与回测)
   ↓
+compare (多模型对比) [可选，多模型框架]
+  ↓
 archive (策略归档) [可选]
+
+review 可在任意阶段触发，用于审查代码修改
+compare 用于多模型框架的横向对比分析
+```
+
+---
+
+## 实验管理系统
+
+### 统一日志输出
+
+所有实验日志统一输出到 `logs/{date}/` 目录：
+
+```
+logs/{date}/
+├── lstm_training.log    # 训练过程日志
+├── lstm_backtest.log    # 回测过程日志
+├── features.log         # 特征工程日志
+├── data_collection.log  # 数据采集日志
+└── experiments/
+    └── {experiment_id}/
+        ├── config.json       # 完整配置快照
+        ├── orders.csv        # 所有订单
+        ├── daily_records.csv # 每日资金记录
+        └── metrics.json      # 回测指标
+```
+
+### 实验注册表
+
+实验注册表存储在 `logs/experiments_registry.json`，记录所有实验的元数据：
+
+```json
+{
+  "experiments": [
+    {
+      "id": "exp_20260117_143022_abc123",
+      "strategy": "expanding_window",
+      "start_date": "2025-04-01",
+      "end_date": "2026-01-15",
+      "config_snapshot": {...},
+      "results_path": "logs/2026-01-17/experiments/exp_20260117_143022_abc123/",
+      "metrics": {
+        "total_return": 1.0707,
+        "sharpe_ratio": 1.818
+      },
+      "status": "completed",
+      "created_at": "2026-01-17T14:30:22"
+    }
+  ]
+}
+```
+
+### 实验 ID 格式
+
+```
+exp_{YYYYMMDD}_{HHMMSS}_{hash6}
+例如: exp_20260117_143022_a1b2c3
+```
+
+### 查看实验
+
+```bash
+# 查看注册表
+cat logs/experiments_registry.json
+
+# 查看今日日志
+ls logs/2026-01-17/
+
+# 查看实验结果
+ls logs/2026-01-17/experiments/
 ```
 
 ---
 
 ## 更新日志
+
+- **2026-01-18**: 支持多模型框架
+  - 新增 `compare.md` - 多模型对比技能
+  - 更新 `train.md` - 支持双框架训练（LSTM + LightGBM/MLP/Ensemble）
+  - 更新 `backtest.md` - 支持双框架回测
+  - 更新技能依赖关系图和典型工作流
+
+- **2026-01-17**: 新增代码审查技能
+  - 新增 `review.md` - 代码审查技能
+  - 支持框架合理性、代码实现、可复用性、规范性审查
+  - 提供标准化审查报告格式
 
 - **2026-01-16**: Skills 迁移和扩展
   - 将 skills 从 `.github/` 迁移到 `.claude/`

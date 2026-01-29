@@ -5,8 +5,9 @@
 """
 
 import sys
+import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
 
@@ -17,17 +18,19 @@ from src.lstm.config import (
     TrainStrategyConfig,
     EXPERIMENT_RESULT_DIR
 )
+from pipeline.shared.logging_config import get_lstm_training_logger
 
 
 class ExperimentManager:
     """实验管理器"""
 
-    def __init__(self, strategies: List[str] = None):
+    def __init__(self, strategies: List[str] = None, logger: Optional[logging.Logger] = None):
         """
         初始化实验管理器
 
         Args:
             strategies: 要运行的策略名称列表，如果为None则运行所有策略
+            logger: 日志记录器，如果为 None 则使用默认的 LSTM 训练日志器
         """
         if strategies is None:
             strategies = list(ALL_STRATEGY_CONFIGS.keys())
@@ -36,6 +39,7 @@ class ExperimentManager:
         self.results = {}  # {strategy_name: result_dict}
         self.output_dir = EXPERIMENT_RESULT_DIR / "experiments"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger = logger or get_lstm_training_logger()
 
     def _get_executor(self, config: TrainStrategyConfig):
         """
@@ -48,18 +52,23 @@ class ExperimentManager:
             策略执行器实例
         """
         from src.lstm.experiments.executors.expanding_window import ExpandingWindowExecutor
-        # 其他执行器将在实现后导入
+        from src.lstm.experiments.executors.v03_repro import V03ReproExecutor
+        from src.lstm.experiments.executors.v03_daily import V03DailyExecutor
 
         executor_map = {
             "expanding_window": ExpandingWindowExecutor,
-            # 其他策略将在实现后添加
+            "v03_repro": V03ReproExecutor,
+            "v03_daily": V03DailyExecutor,
         }
 
         executor_class = executor_map.get(config.strategy_name)
         if executor_class is None:
             raise ValueError(f"Unknown strategy: {config.strategy_name}")
 
-        return executor_class(config)
+        # V03ReproExecutor 和 V03DailyExecutor 不继承 BaseStrategyExecutor，不接受 logger 参数
+        if config.strategy_name in ["v03_repro", "v03_daily"]:
+            return executor_class(config)
+        return executor_class(config, logger=self.logger)
 
     def run_single_experiment(self, strategy_name: str, start_date: str, end_date: str) -> Dict[str, Any]:
         """
@@ -73,9 +82,9 @@ class ExperimentManager:
         Returns:
             实验结果
         """
-        print("=" * 60)
-        print(f"Running experiment: {strategy_name}")
-        print("=" * 60)
+        self.logger.info("=" * 60)
+        self.logger.info(f"Running experiment: {strategy_name}")
+        self.logger.info("=" * 60)
 
         # 创建策略配置
         config_class = ALL_STRATEGY_CONFIGS[strategy_name]
@@ -94,7 +103,7 @@ class ExperimentManager:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        print(f"\nResults saved to: {output_file}\n")
+        self.logger.info(f"Results saved to: {output_file}")
 
         return result
 
@@ -106,25 +115,25 @@ class ExperimentManager:
             start_date: 开始日期
             end_date: 结束日期
         """
-        print("\n" + "=" * 60)
-        print("EXPERIMENT MANAGER - Running All Strategies")
-        print("=" * 60)
-        print(f"Period: {start_date} to {end_date}")
-        print(f"Strategies: {', '.join(self.strategy_names)}")
-        print("=" * 60 + "\n")
+        self.logger.info("=" * 60)
+        self.logger.info("EXPERIMENT MANAGER - Running All Strategies")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Period: {start_date} to {end_date}")
+        self.logger.info(f"Strategies: {', '.join(self.strategy_names)}")
+        self.logger.info("=" * 60)
 
         for strategy_name in self.strategy_names:
             try:
                 result = self.run_single_experiment(strategy_name, start_date, end_date)
                 self.results[strategy_name] = result
             except Exception as e:
-                print(f"Error running {strategy_name}: {e}")
+                self.logger.error(f"Error running {strategy_name}: {e}")
                 import traceback
-                traceback.print_exc()
+                self.logger.error(traceback.format_exc())
 
-        print("\n" + "=" * 60)
-        print("All experiments completed")
-        print("=" * 60)
+        self.logger.info("=" * 60)
+        self.logger.info("All experiments completed")
+        self.logger.info("=" * 60)
 
     def compare_results(self) -> Dict[str, Any]:
         """
@@ -134,7 +143,7 @@ class ExperimentManager:
             对比统计
         """
         if not self.results:
-            print("No results to compare")
+            self.logger.warning("No results to compare")
             return {}
 
         comparison = {
@@ -143,12 +152,19 @@ class ExperimentManager:
         }
 
         for strategy_name, result in self.results.items():
-            n_predictions = len(result['predictions'])
-            n_retrains = len(result['retrain_dates'])
+            # 防御性处理：不同策略的结果结构可能不同
+            predictions = result.get('predictions', [])
+            retrain_dates = result.get('retrain_dates', [])
+            performance_history = result.get('performance_history', [])
+
+            n_predictions = len(predictions) if predictions else 0
+            n_retrains = len(retrain_dates) if retrain_dates else 0
 
             avg_val_acc = 0
-            if result['performance_history']:
-                avg_val_acc = sum(h['val_acc'] for h in result['performance_history']) / len(result['performance_history'])
+            if performance_history:
+                val_accs = [h.get('val_acc', 0) for h in performance_history if h.get('val_acc') is not None]
+                if val_accs:
+                    avg_val_acc = sum(val_accs) / len(val_accs)
 
             comparison['strategies'][strategy_name] = {
                 'n_predictions': n_predictions,
@@ -162,17 +178,17 @@ class ExperimentManager:
         """打印实验摘要"""
         comparison = self.compare_results()
 
-        print("\n" + "=" * 60)
-        print("EXPERIMENT SUMMARY")
-        print("=" * 60)
+        self.logger.info("=" * 60)
+        self.logger.info("EXPERIMENT SUMMARY")
+        self.logger.info("=" * 60)
 
         for strategy_name, stats in comparison['strategies'].items():
-            print(f"\n{strategy_name}:")
-            print(f"  Predictions: {stats['n_predictions']}")
-            print(f"  Retrains: {stats['n_retrains']}")
-            print(f"  Avg Val Acc: {stats['avg_val_acc']:.4f}")
+            self.logger.info(f"{strategy_name}:")
+            self.logger.info(f"  Predictions: {stats['n_predictions']}")
+            self.logger.info(f"  Retrains: {stats['n_retrains']}")
+            self.logger.info(f"  Avg Val Acc: {stats['avg_val_acc']:.4f}")
 
-        print("=" * 60 + "\n")
+        self.logger.info("=" * 60)
 
 
 def main():

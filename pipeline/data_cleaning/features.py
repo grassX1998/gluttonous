@@ -15,14 +15,16 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from pipeline.shared.config import (
-    CLEANED_DATA_DIR, FEATURE_DATA_DIR, TRAIN_DATA_DIR, FEATURE_CONFIG
+    CLEANED_DATA_DIR, FEATURE_DATA_DIR, TRAIN_DATA_DIR, FEATURE_CONFIG,
+    PIPELINE_DATA_ROOT
 )
 from pipeline.shared.utils import (
-    setup_logger, timer, save_parquet_optimized
+    timer, save_parquet_optimized
 )
+from pipeline.shared.logging_config import get_features_logger
 
 
-logger = setup_logger("feature_engineering")
+logger = get_features_logger()
 
 
 # 特征列表
@@ -87,16 +89,34 @@ STOCK_VOL_PARAMS = {
 
 class FeatureEngineer:
     """特征工程器"""
-    
+
     def __init__(self):
         self.config = FEATURE_CONFIG
         self.market_data = None  # 缓存市场数据
+        self.index_constituents = None  # 缓存指数成分股数据
     
+    def load_index_constituents(self) -> pl.DataFrame | None:
+        """加载历史指数成分股数据"""
+        if self.index_constituents is not None:
+            return self.index_constituents
+
+        constituents_path = PIPELINE_DATA_ROOT / "index_constituents.parquet"
+
+        if not constituents_path.exists():
+            logger.warning(f"Index constituents file not found: {constituents_path}")
+            logger.warning("Run data cleaning with --use_historical flag first")
+            return None
+
+        df = pl.read_parquet(constituents_path)
+        self.index_constituents = df
+        logger.info(f"Loaded index constituents: {df.height} records")
+        return self.index_constituents
+
     def load_market_data(self) -> pl.DataFrame:
         """加载市场指数数据（中证500 SZSE.000905）"""
         if self.market_data is not None:
             return self.market_data
-        
+
         from pipeline.shared.config import RAW_DATA_ROOT
         
         index_symbol = "SZSE.000905"  # 中证500指数
@@ -532,13 +552,35 @@ class FeatureEngineer:
         
         # 删除临时列
         df = df.drop(["_next_open", "_future_open"])
-        
+
         # 移除NaN
         df = df.drop_nulls()
-        
+
         # 添加symbol列
         df = df.with_columns(pl.lit(symbol).alias("symbol"))
-        
+
+        # 添加指数成分股标记
+        constituents_df = self.load_index_constituents()
+        if constituents_df is not None:
+            # 创建该股票的成分股日期集合
+            symbol_constituents = constituents_df.filter(pl.col("symbol") == symbol)
+
+            # 确保类型匹配：将date列转为Date类型
+            df = df.with_columns(pl.col("date").cast(pl.Date).alias("_date"))
+            symbol_constituents = symbol_constituents.with_columns(
+                pl.col("date").str.strptime(pl.Date, "%Y-%m-%d").alias("_date")
+            )
+
+            # 标记该股票在每个日期是否在指数中
+            df = df.with_columns(
+                pl.col("_date").is_in(symbol_constituents["_date"]).cast(pl.Int8).alias("in_index")
+            ).drop("_date")
+
+            logger.debug(f"{symbol}: {df['in_index'].sum()} days in index out of {df.height} total days")
+        else:
+            # 如果没有成分股数据，默认设为1（假设都在指数中）
+            df = df.with_columns(pl.lit(1).cast(pl.Int8).alias("in_index"))
+
         return df
 
 

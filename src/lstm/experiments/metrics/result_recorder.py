@@ -9,8 +9,9 @@
 """
 
 import sys
+import logging
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import json
 
@@ -21,22 +22,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from src.lstm.config import (
     EXPERIMENT_RESULT_DIR,
-    DAILY_DATA_DIR
+    DAILY_DATA_DIR,
+    FEATURE_DATA_DIR
 )
+from pipeline.shared.logging_config import get_lstm_backtest_logger
 
 
 class ResultRecorder:
     """结果记录器"""
 
-    def __init__(self, output_dir: Path = None):
+    def __init__(self, output_dir: Path = None, logger: Optional[logging.Logger] = None):
         """
         初始化记录器
 
         Args:
             output_dir: 输出目录
+            logger: 日志记录器，如果为 None 则使用默认的 LSTM 回测日志器
         """
         self.output_dir = output_dir or (EXPERIMENT_RESULT_DIR / "experiments")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger = logger or get_lstm_backtest_logger()
 
     def save_experiment_result(self, strategy_name: str, result: Dict[str, Any],
                               timestamp: str = None) -> Path:
@@ -60,7 +65,7 @@ class ResultRecorder:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        print(f"[ResultRecorder] Saved: {filepath}")
+        self.logger.info(f"[ResultRecorder] Saved: {filepath}")
 
         return filepath
 
@@ -114,8 +119,12 @@ class ResultRecorder:
 
         returns = daily_returns["return"].to_numpy()
 
+        # 计算回测总天数（从预测数据中获取唯一日期数）
+        pred_df = pl.DataFrame(predictions)
+        total_trading_days = pred_df["date"].n_unique()
+
         # 计算指标
-        metrics = self._calculate_metrics(returns, len(trades))
+        metrics = self._calculate_metrics(returns, len(trades), total_trading_days)
 
         return metrics
 
@@ -123,18 +132,40 @@ class ResultRecorder:
         """加载价格数据"""
         price_map = {}
 
-        if not DAILY_DATA_DIR.exists():
-            print("[WARNING] Daily data directory not found")
-            return price_map
+        # 优先尝试 FEATURE_DATA_DIR（特征数据目录），然后尝试 DAILY_DATA_DIR
+        data_dirs = [FEATURE_DATA_DIR, DAILY_DATA_DIR]
 
-        # 加载所有日线数据
-        for parquet_file in DAILY_DATA_DIR.glob("*.parquet"):
-            try:
-                df = pl.read_parquet(parquet_file)
-                for row in df.select(["date", "symbol", "close"]).iter_rows():
-                    price_map[(row[0], row[1])] = row[2]
-            except:
-                pass
+        for data_dir in data_dirs:
+            if not data_dir.exists():
+                continue
+
+            parquet_files = list(data_dir.glob("*.parquet"))
+            if not parquet_files:
+                continue
+
+            self.logger.info(f"Loading price data from: {data_dir} ({len(parquet_files)} files)")
+
+            # 加载所有数据
+            for parquet_file in parquet_files:
+                try:
+                    df = pl.read_parquet(parquet_file)
+                    # 检查需要的列是否存在
+                    required_cols = ["date", "symbol", "close"]
+                    if not all(col in df.columns for col in required_cols):
+                        continue
+                    # 将日期转换为字符串格式（YYYY-MM-DD）以匹配 predictions 格式
+                    df = df.with_columns(pl.col("date").cast(str).alias("date_str"))
+                    for row in df.select(["date_str", "symbol", "close"]).iter_rows():
+                        price_map[(row[0], row[1])] = row[2]
+                except Exception as e:
+                    self.logger.warning(f"Failed to load {parquet_file}: {e}")
+
+            if price_map:
+                self.logger.info(f"Loaded {len(price_map)} price records")
+                break  # 成功加载后退出
+
+        if not price_map:
+            self.logger.warning("No price data loaded from any directory")
 
         return price_map
 
@@ -218,8 +249,16 @@ class ResultRecorder:
 
         return trades
 
-    def _calculate_metrics(self, returns: np.ndarray, n_trades: int) -> Dict[str, float]:
-        """计算回测指标"""
+    def _calculate_metrics(self, returns: np.ndarray, n_trades: int,
+                           total_trading_days: int = None) -> Dict[str, float]:
+        """
+        计算回测指标
+
+        Args:
+            returns: 每日收益率数组
+            n_trades: 总交易次数
+            total_trading_days: 回测总交易日数（用于年化计算）
+        """
         if len(returns) == 0:
             return {
                 'total_return': 0,
@@ -234,8 +273,8 @@ class ResultRecorder:
         cum_returns = np.cumprod(1 + returns) - 1
         total_return = cum_returns[-1]
 
-        # 年化收益
-        n_days = len(returns)
+        # 年化收益（使用回测总天数，而非有交易的天数）
+        n_days = total_trading_days if total_trading_days else len(returns)
         annual_return = (1 + total_return) ** (250 / n_days) - 1 if n_days > 0 else 0
 
         # 夏普比率
@@ -261,12 +300,14 @@ class ResultRecorder:
             'n_days': n_days
         }
 
-    def compare_strategies(self, results: Dict[str, Dict]) -> Dict[str, Any]:
+    def compare_strategies(self, results: Dict[str, Dict],
+                           experiment_ids: Dict[str, str] = None) -> Dict[str, Any]:
         """
         对比多个策略的结果
 
         Args:
             results: {strategy_name: result_dict}
+            experiment_ids: {strategy_name: experiment_id}（可选）
 
         Returns:
             对比统计
@@ -275,6 +316,9 @@ class ResultRecorder:
             'timestamp': datetime.now().isoformat(),
             'strategies': {}
         }
+
+        if experiment_ids is None:
+            experiment_ids = {}
 
         for strategy_name, result in results.items():
             # 如果结果中已有metrics，直接使用
@@ -285,6 +329,7 @@ class ResultRecorder:
                 metrics = self.calculate_backtest_metrics(result.get('predictions', []))
 
             comparison['strategies'][strategy_name] = {
+                'experiment_id': experiment_ids.get(strategy_name, ''),
                 'metrics': metrics,
                 'n_predictions': len(result.get('predictions', [])),
                 'n_retrains': len(result.get('retrain_dates', [])),
@@ -308,12 +353,31 @@ class ResultRecorder:
         lines.append("")
         lines.append(f"**更新时间**: {comparison['timestamp']}")
         lines.append("")
-        lines.append("| 策略 | 总收益率 | 年化收益 | Sharpe | 最大回撤 | 胜率 | 交易次数 |")
-        lines.append("|------|---------|---------|--------|---------|------|---------|")
+
+        # 检查是否有 experiment_id
+        has_exp_id = any(
+            data.get('experiment_id')
+            for data in comparison['strategies'].values()
+        )
+
+        if has_exp_id:
+            lines.append("| 策略 | 实验ID | 总收益率 | 年化收益 | Sharpe | 最大回撤 | 胜率 | 交易次数 |")
+            lines.append("|------|--------|---------|---------|--------|---------|------|---------|")
+        else:
+            lines.append("| 策略 | 总收益率 | 年化收益 | Sharpe | 最大回撤 | 胜率 | 交易次数 |")
+            lines.append("|------|---------|---------|--------|---------|------|---------|")
 
         for strategy_name, data in comparison['strategies'].items():
             metrics = data['metrics']
-            line = f"| {strategy_name} | "
+            exp_id = data.get('experiment_id', '')
+
+            if has_exp_id:
+                # 截取实验 ID 的后 12 位作为短 ID
+                short_id = exp_id[-12:] if exp_id else '-'
+                line = f"| {strategy_name} | {short_id} | "
+            else:
+                line = f"| {strategy_name} | "
+
             line += f"{metrics['total_return']*100:+.2f}% | "
             line += f"{metrics['annual_return']*100:+.2f}% | "
             line += f"{metrics['sharpe_ratio']:.3f} | "
@@ -336,7 +400,7 @@ class ResultRecorder:
         claude_md_path = Path("CLAUDE.md")
 
         if not claude_md_path.exists():
-            print("[WARNING] CLAUDE.md not found")
+            self.logger.warning("CLAUDE.md not found")
             return
 
         # 读取现有内容
@@ -366,7 +430,7 @@ class ResultRecorder:
         with open(claude_md_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
 
-        print(f"[ResultRecorder] Updated: {claude_md_path}")
+        self.logger.info(f"[ResultRecorder] Updated: {claude_md_path}")
 
 
 def main():

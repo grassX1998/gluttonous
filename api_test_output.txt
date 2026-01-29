@@ -1,0 +1,2 @@
+FAIL: {'symbols': 'SHSE.600000', 'date': '2025-01-02'} -> stk_get_fundamentals_balance_pt() missing 1 required positional argument: 'fields'
+FAIL: {'symbols': 'SHSE.600000', 'trade_date': '2025-01-02'} -> stk_get_fundamentals_balance_pt() got an unexpected keyword argument 'trade_date'

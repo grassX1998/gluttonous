@@ -21,12 +21,14 @@ from pipeline.shared.config import (
     RAW_DATA_ROOT, CLEANED_DATA_DIR, CLEANING_CONFIG, PIPELINE_DATA_ROOT
 )
 from pipeline.shared.utils import (
-    setup_logger, timer, save_parquet_optimized,
-    check_dataframe_quality, get_file_size
+    timer, save_parquet_optimized,
+    check_dataframe_quality, get_file_size,
+    get_all_historical_constituents
 )
+from pipeline.shared.logging_config import get_cleaning_logger
 
 
-logger = setup_logger("data_cleaning")
+logger = get_cleaning_logger()
 
 
 class DataCleaner:
@@ -44,45 +46,74 @@ class DataCleaner:
         }
     
     @timer
-    def load_index_constituents(self, index_codes: list[str] = None) -> list[str]:
+    def load_index_constituents(self, index_codes: list[str] = None,
+                                use_historical: bool = True,
+                                start_date: str = None,
+                                end_date: str = None) -> list[str]:
         """加载指数成分股列表
-        
+
         Args:
-            index_codes: 指数代码列表，如 ["SHSE.000905", "SHSE.000852"]
-                        默认使用中证500 + 中证1000
+            index_codes: 指数代码列表，如 ["SZSE.000852"] for 中证1000
+                        默认使用中证1000
+            use_historical: 是否加载历史所有成分股（避免幸存者偏差）
+            start_date: 开始日期（仅在use_historical=True时使用）
+            end_date: 结束日期（仅在use_historical=True时使用）
         """
         if index_codes is None:
-            # 默认：中证500 + 中证1000 = 1500只股票
-            index_codes = ["SHSE.000905", "SHSE.000852"]
-        
+            # 默认：仅使用中证1000
+            index_codes = ["SZSE.000852"]
+
         logger.info(f"Loading index constituents: {index_codes}")
-        
+        logger.info(f"Use historical constituents: {use_historical}")
+
         index_dir = RAW_DATA_ROOT / "meta" / "index"
-        
-        # 找到最新的日期目录
-        date_dirs = sorted([d for d in index_dir.iterdir() if d.is_dir()], reverse=True)
-        if not date_dirs:
-            raise ValueError("No index data found")
-        
-        latest_date = date_dirs[0].name
-        logger.info(f"Using index data from {latest_date}")
-        
-        all_symbols = set()
-        for code in index_codes:
-            toml_path = index_dir / latest_date / f"{code}.toml"
-            if toml_path.exists():
-                with open(toml_path, "rb") as f:
-                    data = tomllib.load(f)
-                    symbols = data.get("sec_ids", [])
-                    all_symbols.update(symbols)
-                    logger.info(f"  {code}: {len(symbols)} stocks")
-            else:
-                logger.warning(f"Index file not found: {toml_path}")
-        
+
+        if use_historical and start_date and end_date:
+            # 加载历史所有成分股（避免幸存者偏差）
+            logger.info(f"Loading historical constituents from {start_date} to {end_date}")
+
+            historical_data = get_all_historical_constituents(
+                index_dir, index_codes, start_date, end_date
+            )
+
+            # 合并所有历史成分股
+            all_symbols = set()
+            for date_symbols in historical_data.values():
+                all_symbols.update(date_symbols)
+
+            # 保存历史成分股数据供后续使用
+            self.historical_constituents = historical_data
+
+            logger.info(f"Found {len(historical_data)} dates with constituent data")
+            logger.info(f"Total historical unique stocks: {len(all_symbols)}")
+
+        else:
+            # 只加载最新的成分股
+            date_dirs = sorted([d for d in index_dir.iterdir() if d.is_dir()], reverse=True)
+            if not date_dirs:
+                raise ValueError("No index data found")
+
+            latest_date = date_dirs[0].name
+            logger.info(f"Using latest index data from {latest_date}")
+
+            all_symbols = set()
+            for code in index_codes:
+                toml_path = index_dir / latest_date / f"{code}.toml"
+                if toml_path.exists():
+                    with open(toml_path, "rb") as f:
+                        data = tomllib.load(f)
+                        symbols = data.get("sec_ids", [])
+                        all_symbols.update(symbols)
+                        logger.info(f"  {code}: {len(symbols)} stocks")
+                else:
+                    logger.warning(f"Index file not found: {toml_path}")
+
+            self.historical_constituents = None
+
         symbols = sorted(list(all_symbols))
-        logger.info(f"Total unique stocks: {len(symbols)}")
+        logger.info(f"Total unique stocks to clean: {len(symbols)}")
         self.stats["total_symbols"] = len(symbols)
-        
+
         return symbols
     
     @timer
@@ -309,37 +340,72 @@ class DataCleaner:
         # 保存清洗后的数据
         output_path = CLEANED_DATA_DIR / f"{symbol}.parquet"
         save_parquet_optimized(df, output_path)
-        
+
         self.stats["valid_symbols"] += 1
         return True
+
+    def save_historical_constituents(self):
+        """保存历史成分股数据供特征工程使用"""
+        if not hasattr(self, 'historical_constituents') or self.historical_constituents is None:
+            logger.warning("No historical constituents data to save")
+            return
+
+        logger.info("Saving historical constituents data...")
+
+        # 转换为DataFrame格式：date, symbol列表
+        data = []
+        for date, symbols in self.historical_constituents.items():
+            for symbol in symbols:
+                data.append({"date": date, "symbol": symbol})
+
+        if not data:
+            logger.warning("No constituent data to save")
+            return
+
+        df = pl.DataFrame(data)
+
+        # 保存到pipeline_data目录
+        output_path = PIPELINE_DATA_ROOT / "index_constituents.parquet"
+        save_parquet_optimized(df, output_path)
+
+        logger.info(f"Saved historical constituents: {df.height} records")
+        logger.info(f"Date range: {df['date'].min()} to {df['date'].max()}")
+        logger.info(f"Unique stocks: {df['symbol'].n_unique()}")
     
     @timer
-    def run(self, start_date: str, end_date: str, 
+    def run(self, start_date: str, end_date: str,
             symbol_limit: int | None = None,
             use_index: bool = True,
             index_codes: list[str] | None = None,
+            use_historical: bool = True,
             exclude_codes: list[str] | None = None):
         """执行完整的数据清洗流程
-        
+
         Args:
             start_date: 开始日期
             end_date: 结束日期
             symbol_limit: 限制股票数量（测试用）
             use_index: 是否使用指数成分股（默认True）
-            index_codes: 指数代码列表（默认中证500+中证1000）
+            index_codes: 指数代码列表（默认中证1000）
+            use_historical: 是否加载历史所有成分股（避免幸存者偏差）
             exclude_codes: 需要排除的指数代码列表
         """
         logger.info("="*60)
         logger.info("Starting Data Cleaning Pipeline")
         logger.info("="*60)
-        
+
         # 1. 加载股票列表
         if use_index:
-            symbols = self.load_index_constituents(index_codes)
+            symbols = self.load_index_constituents(
+                index_codes,
+                use_historical=use_historical,
+                start_date=start_date,
+                end_date=end_date
+            )
         else:
             instruments = self.load_instruments()
             symbols = instruments["symbol"].to_list()
-        
+
         # 排除指定指数的成分股
         if exclude_codes:
             exclude_symbols = self.get_exclude_symbols(exclude_codes)
@@ -399,8 +465,12 @@ class DataCleaner:
                 pass  # 结果已经在 process_symbol 中处理
         
         logger.info(f"Completed: {success_count}/{len(symbols_to_process)} success")
-        
-        # 4. 输出统计报告
+
+        # 4. 保存历史成分股数据
+        if use_historical:
+            self.save_historical_constituents()
+
+        # 5. 输出统计报告
         self._print_summary()
     
     def _print_summary(self):
@@ -423,7 +493,7 @@ class DataCleaner:
 def main():
     """主函数"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Data Cleaning Pipeline")
     parser.add_argument("--start_date", type=str, default="2024-06-18",
                        help="Start date (YYYY-MM-DD)")
@@ -433,21 +503,24 @@ def main():
                        help="Limit number of symbols (for testing)")
     parser.add_argument("--all_stocks", action="store_true",
                        help="Use all stocks instead of index constituents")
-    parser.add_argument("--index", type=str, nargs="+", 
-                       default=["SHSE.000905", "SHSE.000852"],
-                       help="Index codes to use (default: CSI500 + CSI1000)")
+    parser.add_argument("--index", type=str, nargs="+",
+                       default=["SHSE.000852"],
+                       help="Index codes to use (default: CSI1000 only)")
+    parser.add_argument("--use_historical", action="store_true", default=True,
+                       help="Load all historical constituents (default: True)")
     parser.add_argument("--exclude", type=str, nargs="+", default=None,
-                       help="Index codes to exclude (e.g. SHSE.000300 SHSE.000905)")
-    
+                       help="Index codes to exclude")
+
     args = parser.parse_args()
-    
+
     cleaner = DataCleaner()
     cleaner.run(
-        args.start_date, 
-        args.end_date, 
+        args.start_date,
+        args.end_date,
         args.limit,
         use_index=not args.all_stocks,
         index_codes=args.index,
+        use_historical=args.use_historical,
         exclude_codes=args.exclude
     )
 

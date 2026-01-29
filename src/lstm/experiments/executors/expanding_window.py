@@ -10,8 +10,9 @@
 """
 
 import sys
+import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -27,21 +28,25 @@ from pipeline.data_cleaning.features import FEATURE_COLS
 class ExpandingWindowExecutor(BaseStrategyExecutor):
     """扩展窗口执行器"""
 
-    def __init__(self, config: ExpandingWindowConfig):
-        super().__init__(config)
+    def __init__(self, config: ExpandingWindowConfig, logger: Optional[logging.Logger] = None):
+        super().__init__(config, logger=logger)
         self.train_start_date = None  # 训练集起始日期
         self.last_train_date = None  # 上次训练的日期
         self.train_count = 0  # 训练次数
 
     def prepare_data(self, current_date: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        准备扩展窗口数据
+        准备扩展窗口数据（修正版：避免标签前瞻偏差）
 
-        策略：
-        1. 确定训练起始日期（如果首次训练）
-        2. 训练集：从起始日期到当前日期前N天
-        3. 验证集：当前日期前1天
-        4. 应用样本权重（近期数据权重更高）
+        数据划分策略：
+        - 训练集: Day 1 ~ T - holding_days - val_days (标签都已实现)
+        - 验证集: T - holding_days - val_days + 1 ~ T - holding_days (标签刚实现)
+        - 预测集: T (当前日期，标签未知)
+
+        例如 T=100, holding_days=5, val_days=5:
+        - 训练集: Day 1 ~ 90 (标签需要 Day 6~95 的价格，都已知)
+        - 验证集: Day 91 ~ 95 (标签需要 Day 96~100 的价格，都已知)
+        - 预测集: Day 100 (标签需要 Day 105 的价格，未知)
         """
         config: ExpandingWindowConfig = self.config
 
@@ -49,26 +54,29 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
         all_dates = self._get_trading_dates("2024-01-01", current_date)
         current_idx = all_dates.index(current_date) if current_date in all_dates else len(all_dates) - 1
 
-        # 确定训练起始日期（首次训练）
-        if self.train_start_date is None:
-            start_idx = max(0, current_idx - config.min_train_days)
-            self.train_start_date = all_dates[start_idx]
+        # 关键修正：考虑 holding_days 的标签滞后
+        holding_days = getattr(config, 'holding_days', 5)
 
-        # 训练集结束日期 = 当前日期 - val_days - 1
-        train_end_idx = current_idx - config.val_days - 1
+        # 验证集结束日期 = 当前日期 - holding_days (确保验证集标签已实现)
+        val_end_idx = current_idx - holding_days
+        if val_end_idx < 0:
+            raise ValueError(f"Not enough data: need {holding_days} days for label realization on {current_date}")
+
+        # 验证集起始日期 = 验证集结束日期 - val_days + 1
+        val_start_idx = val_end_idx - config.val_days + 1
+        if val_start_idx < 0:
+            val_start_idx = 0
+
+        # 训练集结束日期 = 验证集起始日期 - 1
+        train_end_idx = val_start_idx - 1
         if train_end_idx < 0:
             raise ValueError(f"Not enough data for training on {current_date}")
 
-        train_end_date = all_dates[train_end_idx]
+        # 确定训练起始日期（首次训练）
+        if self.train_start_date is None:
+            start_idx = max(0, train_end_idx - config.min_train_days + 1)
+            self.train_start_date = all_dates[start_idx]
 
-        # 验证集日期 = 当前日期 - 1
-        val_idx = current_idx - 1
-        if val_idx < 0:
-            raise ValueError(f"Not enough data for validation on {current_date}")
-
-        val_date = all_dates[val_idx]
-
-        # 检查训练集大小限制
         train_start_idx = all_dates.index(self.train_start_date)
         train_size = train_end_idx - train_start_idx + 1
 
@@ -77,9 +85,14 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
             train_start_idx = train_end_idx - config.max_train_days + 1
             self.train_start_date = all_dates[train_start_idx]
 
+        # 获取日期
+        train_end_date = all_dates[train_end_idx]
+        val_start_date = all_dates[val_start_idx]
+        val_end_date = all_dates[val_end_idx]
+
         # 加载数据
         train_data = self._load_date_range_data(self.train_start_date, train_end_date)
-        val_data = self._load_date_range_data(val_date, val_date)
+        val_data = self._load_date_range_data(val_start_date, val_end_date)
 
         if train_data is None or train_data.is_empty():
             raise ValueError("No training data available")
@@ -142,9 +155,22 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
     def train_model(self, X_train: np.ndarray, y_train: np.ndarray,
                    X_val: np.ndarray, y_val: np.ndarray) -> float:
         """
-        训练模型（调用父类方法，并记录训练日期）
+        训练模型（支持增量学习/微调模式）
+
+        自动判断是否使用微调模式：
+        - 首次训练或每 20 次：完整训练（10 epochs）
+        - 其他情况：微调模式（3 epochs，低学习率）
         """
-        val_acc = super().train_model(X_train, y_train, X_val, y_val)
+        # 判断是否使用微调模式
+        use_finetune = self.should_finetune()
+
+        if use_finetune:
+            mode_str = "finetune"
+        else:
+            mode_str = "full"
+
+        # 调用父类训练方法
+        val_acc = super().train_model(X_train, y_train, X_val, y_val, finetune=use_finetune)
 
         # 更新训练状态
         self.train_count += 1
@@ -176,8 +202,8 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
         计算样本权重（指数衰减）
 
         Args:
-            dates: 样本日期列表
-            current_date: 当前日期
+            dates: 样本日期列表（可以是字符串或datetime.date对象）
+            current_date: 当前日期（字符串）
 
         Returns:
             权重数组
@@ -186,7 +212,15 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
 
         # 转换为datetime
         current_dt = datetime.strptime(current_date, '%Y-%m-%d')
-        date_dts = [datetime.strptime(d, '%Y-%m-%d') for d in dates]
+
+        # 处理dates列表（可能是字符串或datetime.date对象）
+        date_dts = []
+        for d in dates:
+            if isinstance(d, str):
+                date_dts.append(datetime.strptime(d, '%Y-%m-%d'))
+            else:
+                # 假设是datetime.date对象，转换为datetime
+                date_dts.append(datetime.combine(d, datetime.min.time()))
 
         # 计算天数差距
         days_diff = np.array([(current_dt - dt).days for dt in date_dts])
@@ -214,6 +248,8 @@ class ExpandingWindowExecutor(BaseStrategyExecutor):
             'config': {
                 'min_train_days': self.config.min_train_days,
                 'max_train_days': self.config.max_train_days,
+                'val_days': self.config.val_days,
+                'holding_days': getattr(self.config, 'holding_days', 5),
                 'use_sample_weight': self.config.use_sample_weight,
                 'weight_decay_days': self.config.weight_decay_days,
                 'weight_decay_rate': self.config.weight_decay_rate,

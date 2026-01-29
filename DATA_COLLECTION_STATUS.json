@@ -1,0 +1,9 @@
+{
+  "status": "blocked",
+  "date": "2026-01-29",
+  "updated_at": "2026-01-29T19:38:05.315963",
+  "success_count": 0,
+  "fail_count": 0,
+  "last_successful_run": null,
+  "error": "无法启动：已有另一个实例在运行"
+}

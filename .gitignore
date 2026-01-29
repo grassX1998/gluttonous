@@ -33,6 +33,7 @@ env/
 
 # Data & logs
 data/
+logs/
 *.log
 output.log
 
@@ -41,3 +42,6 @@ output.log
 
 # LSTM training data (local cache)
 src/lstm/data/
+
+# Windows null device file
+nul

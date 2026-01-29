@@ -157,9 +157,96 @@ def clean_old_files(directory: Path, keep_latest: int = 5):
     """清理旧文件，保留最新的N个"""
     if not directory.exists():
         return
-    
+
     files = sorted(directory.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)
     for file in files[keep_latest:]:
         if file.is_file():
             file.unlink()
             print(f"Deleted old file: {file.name}")
+
+
+# ===== 指数成分股工具 =====
+def get_index_constituents_by_date(index_dir: Path, index_code: str, date: str) -> list[str]:
+    """
+    读取指定日期的指数成分股
+
+    Args:
+        index_dir: 指数数据目录 (e.g., RAW_DATA_ROOT / "meta" / "index")
+        index_code: 指数代码 (e.g., "SZSE.000852" for 中证1000)
+        date: 日期字符串 (e.g., "2025-04-01")
+
+    Returns:
+        成分股代码列表
+    """
+    import tomllib
+
+    # 查找该日期的成分股文件
+    date_path = index_dir / date / f"{index_code}.toml"
+
+    if date_path.exists():
+        with open(date_path, "rb") as f:
+            data = tomllib.load(f)
+            return data.get("sec_ids", [])
+
+    # 如果当天没有数据，向前查找最近的一个交易日
+    all_dates = sorted([d.name for d in index_dir.iterdir() if d.is_dir()])
+
+    # 找到小于等于目标日期的最近日期
+    valid_dates = [d for d in all_dates if d <= date]
+    if not valid_dates:
+        return []
+
+    nearest_date = valid_dates[-1]
+    nearest_path = index_dir / nearest_date / f"{index_code}.toml"
+
+    if nearest_path.exists():
+        with open(nearest_path, "rb") as f:
+            data = tomllib.load(f)
+            return data.get("sec_ids", [])
+
+    return []
+
+
+def get_all_historical_constituents(index_dir: Path, index_codes: list[str],
+                                    start_date: str, end_date: str) -> dict[str, set[str]]:
+    """
+    获取指定时间段内所有历史成分股
+
+    Args:
+        index_dir: 指数数据目录
+        index_codes: 指数代码列表
+        start_date: 开始日期
+        end_date: 结束日期
+
+    Returns:
+        字典，key为日期，value为该日期的成分股集合
+    """
+    import tomllib
+
+    # 获取所有可用日期
+    all_dates = sorted([d.name for d in index_dir.iterdir() if d.is_dir()])
+
+    # 过滤日期范围
+    valid_dates = [d for d in all_dates if start_date <= d <= end_date]
+
+    historical_constituents = {}
+    all_symbols = set()
+
+    for date in valid_dates:
+        date_symbols = set()
+        for index_code in index_codes:
+            toml_path = index_dir / date / f"{index_code}.toml"
+            if toml_path.exists():
+                try:
+                    with open(toml_path, "rb") as f:
+                        data = tomllib.load(f)
+                        symbols = data.get("sec_ids", [])
+                        date_symbols.update(symbols)
+                        all_symbols.update(symbols)
+                except Exception:
+                    continue
+
+        if date_symbols:
+            historical_constituents[date] = date_symbols
+
+    return historical_constituents

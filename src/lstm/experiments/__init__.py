@@ -6,5 +6,6 @@ LSTM 实验框架
 
 from .experiment_manager import ExperimentManager
 from .base_executor import BaseStrategyExecutor
+from .registry import ExperimentRegistry, get_registry
 
-__all__ = ["ExperimentManager", "BaseStrategyExecutor"]
+__all__ = ["ExperimentManager", "BaseStrategyExecutor", "ExperimentRegistry", "get_registry"]

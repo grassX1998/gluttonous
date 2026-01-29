@@ -1,6 +1,6 @@
 # 策略回测 (Backtest)
 
-使用 LSTM 实验框架进行策略回测和性能评估。
+支持 LSTM 框架和多模型框架（LightGBM/MLP/Ensemble）进行策略回测和性能评估。
 
 ## 职责
 
@@ -14,9 +14,115 @@
 
 ## 输出
 
-- **实验结果**: `src/lstm/data/results/experiments/*.json`
-- **回测指标**: 总收益率、夏普比率、最大回撤、胜率等
-- **详细数据**: 包含每日预测、交易记录、性能历史
+### 标准输出结构
+
+所有回测必须生成以下标准化输出：
+
+#### LSTM 框架
+
+1. **实验结果** (`src/lstm/data/results/experiments/`):
+   - `{strategy}_{timestamp}.json` - 预测结果和配置
+
+2. **回测结果** (`src/lstm/data/results/backtest/`):
+   - `backtest_{timestamp}.json` - 完整回测数据（订单、持仓、每日记录）
+
+3. **报告** (`src/lstm/data/results/reports/`):
+   - `{strategy}_report_{timestamp}.md` - Markdown格式详细报告
+   - `{strategy}_report_{timestamp}.png` - 综合性能图表（6子图）
+
+4. **优化记录** (`src/lstm/data/results/optimization/`):
+   - `optimization_log_{timestamp}.json` - 参数优化历史
+   - `best_params_{strategy}.json` - 当前最佳参数配置
+
+#### 多模型框架
+
+1. **实验结果** (`src/models/data/results/`):
+   - `{model}_{timestamp}.json` - 预测结果和配置
+
+2. **对比报告** (`src/models/data/results/reports/`):
+   - `comparison_{timestamp}.md` - 多模型对比报告
+   - `comparison_{timestamp}.png` - 对比图表
+
+#### 通用归档
+
+5. **实验归档** (`logs/{date}/experiments/{experiment_id}/`):
+   - `config.json` - 完整配置快照
+   - `orders.csv` - 所有交易订单
+   - `daily_records.csv` - 每日资金/持仓记录
+   - `metrics.json` - 回测指标
+
+### 订单归档结构
+
+```
+logs/{date}/experiments/{experiment_id}/
+├── config.json           # 完整配置快照
+├── orders.csv            # 所有订单记录
+│   └── columns: date, symbol, action, price, shares, amount, commission, slippage, pnl, pnl_pct, holding_days
+├── daily_records.csv     # 每日资金记录
+│   └── columns: date, cash, holdings_value, portfolio_value, return, n_positions, position_ratio
+└── metrics.json          # 回测指标
+    └── keys: total_return, annual_return, sharpe_ratio, max_drawdown, win_rate, n_trades, n_days
+```
+
+### 日志输出
+
+回测日志统一输出到 `logs/{date}/lstm_backtest.log`
+
+### 报告内容规范
+
+Markdown报告必须包含：
+- 执行概要（时间、期间、资金）
+- 核心指标（收益、风险、交易统计）
+- 可视化图表引用
+- 策略配置详情
+- 风险提示
+
+### 可视化图表规范
+
+PNG图表必须包含6个子图：
+1. **累计收益曲线** - 显示收益率随时间变化，标注总收益
+2. **净值曲线** - 显示资产净值变化
+3. **回撤曲线** - 填充图显示回撤幅度，标注最大回撤
+4. **每日持仓数量** - 柱状图，显示目标持仓线
+5. **日收益分布** - 直方图，标注均值
+6. **统计摘要** - 文本框显示关键指标
+
+### 报告数据格式
+
+回测结果JSON必须包含 `daily_data` 字段用于报告生成：
+
+```python
+{
+    "strategy": "策略名称",
+    "config": {
+        "top_n": 10,
+        "prob_threshold": 0.60,
+        "holding_days": 5,
+        "commission": 0.001,
+        "slippage": 0.001
+    },
+    "results": {
+        "total_return": 0.75,
+        "annual_return": 0.85,
+        "sharpe_ratio": 1.5,
+        "max_drawdown": 0.38,
+        "daily_win_rate": 0.55,
+        "trade_win_rate": 0.52,
+        "n_trades": 1200
+    },
+    "daily_data": [
+        {
+            "date": "2025-04-01",
+            "cum_return": 0.01,
+            "cum_value": 1.01,
+            "drawdown": 0.0,
+            "daily_return": 0.01,
+            "n_positions": 10
+        },
+        ...
+    ]
+}
+```
 
 ## 回测配置
 
@@ -54,6 +160,8 @@ ExpandingWindowConfig = {
 
 ## 运行命令
 
+### LSTM 框架
+
 ```bash
 # 运行基本回测（只生成预测）
 python src/lstm/scripts/run_experiments.py \
@@ -78,6 +186,76 @@ python src/lstm/scripts/run_experiments.py \
 python src/lstm/scripts/run_experiments.py \
     --strategies expanding_window \
     --trading_params '{"top_n": 20, "prob_threshold": 0.65, "holding_days": 3}'
+
+# 从结果文件生成可视化报告
+python -m src.lstm.experiments.metrics.report_generator \
+    --result src/lstm/data/results/v03_repro_xxx.json \
+    --show  # 可选，显示图表
+```
+
+### 多模型框架
+
+```bash
+# 运行 LightGBM 回测
+python src/models/scripts/run_lightgbm.py \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 运行 MLP 回测
+python src/models/scripts/run_mlp.py \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 运行 Ensemble 回测
+python src/models/scripts/run_ensemble.py \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 多模型对比回测
+python src/models/scripts/compare_models.py \
+    --models lightgbm,mlp,ensemble \
+    --start_date 2025-04-01 \
+    --end_date 2026-01-15
+
+# 生成可视化报告
+python src/models/scripts/generate_report.py \
+    --result src/models/data/results/lightgbm_xxx.json \
+    --show
+```
+
+## 报告生成API
+
+使用 `BacktestReportGenerator` 生成报告：
+
+```python
+from src.lstm.experiments.metrics import BacktestReportGenerator
+
+# 创建生成器
+generator = BacktestReportGenerator()
+
+# 生成报告（返回 {png: Path, md: Path}）
+paths = generator.generate_report(
+    daily_data=result['daily_data'],
+    results=result['results'],
+    config=result['config'],
+    strategy_name="expanding_window",
+    show=False  # 不显示窗口
+)
+
+print(f"PNG: {paths['png']}")
+print(f"MD: {paths['md']}")
+```
+
+或直接从JSON文件生成：
+
+```python
+from src.lstm.experiments.metrics import generate_report_from_json
+from pathlib import Path
+
+generate_report_from_json(
+    json_path=Path("src/lstm/data/results/backtest_xxx.json"),
+    show=True
+)
 ```
 
 ## 回测指标
@@ -192,5 +370,6 @@ cat src/lstm/data/results/experiments/expanding_window_*.json
 ## 相关文档
 
 - 快速入门：`docs/QUICKSTART_LSTM.md`
-- 完整指南：`src/lstm/README.md`
+- LSTM 框架指南：`src/lstm/README.md`
+- 多模型配置：`src/models/config.py`
 - 实验框架：`docs/EXPERIMENT_FRAMEWORK.md`
